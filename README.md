@@ -1,4 +1,4 @@
-# Futbol2026: Pipeline Profesional de Análisis Táctico de Fútbol
+# FutbolIA: Pipeline Profesional de Análisis Táctico de Fútbol
 
 Este proyecto es una plataforma avanzada y modular de análisis deportivo de fútbol basada en Inteligencia Artificial (**YOLOv8 + ByteTrack**). Permite procesar videos de fútbol (especialmente tomas aéreas de drones o cámaras tácticas), realizar el tracking continuo de jugadores y balón, y proyectar visualizaciones analíticas avanzadas directamente en el video y en un mapa táctico 2D.
 
@@ -29,7 +29,7 @@ El pipeline genera automáticamente un video consolidado en cuadrícula sincroni
 ## 📁 Estructura del Proyecto
 
 ```text
-Futbol2026/
+FutbolIA/
 ├── config/
 │   ├── field.png          # Imagen de fondo del campo de fútbol para el mapa 2D
 │   └── settings.py         # Configuraciones generales del proyecto
@@ -58,8 +58,8 @@ Futbol2026/
 
 ### 1. Clonar el repositorio
 ```bash
-git clone https://github.com/tu-usuario/Futbol2026.git
-cd Futbol2026
+git clone https://github.com/tu-usuario/FutbolIA.git
+cd FutbolIA
 ```
 
 ### 2. Crear un entorno virtual e instalar dependencias
@@ -105,11 +105,11 @@ El proyecto es totalmente compatible con Google Colab para procesamiento acelera
 
 1. Comprime las carpetas necesarias:
    ```powershell
-   Compress-Archive -Path src, config, model, clips, run_colab.ipynb -DestinationPath Futbol2026_colab.zip -Force
+   Compress-Archive -Path src, config, model, clips, run_colab.ipynb -DestinationPath FutbolIA_colab.zip -Force
    ```
 2. Sube el `.zip` a tu entorno de Colab.
 3. Descomprime y ejecuta el script principal:
    ```python
-   !unzip -q Futbol2026_colab.zip -d /content/Futbol2026/
-   !PYTHONPATH=/content/Futbol2026 python /content/Futbol2026/src/detect_video.py
+   !unzip -q FutbolIA_colab.zip -d /content/FutbolIA/
+   !PYTHONPATH=/content/FutbolIA python /content/FutbolIA/src/detect_video.py
    ```
