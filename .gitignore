@@ -1,38 +1,36 @@
-# Virtual environment
+# Entorno virtual
 .venv/
 venv/
 env/
 ENV/
 
-# Python cache and compiled files
+# Python cache y compilados
 __pycache__/
 *.py[cod]
 *$py.class
 
-# PyCharm / VS Code workspace configurations
+# Editores
 .idea/
 .vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.swp
 
-# Model weights (YOLO models are too large for Git)
-model/
-*.pt
-*.onnx
-*.engine
+# Modelo (archivo pesado - descargar desde Google Drive)
+model/*.pt
+model/*.onnx
+model/*.engine
 
-# Video clips (raw and processed)
-clips/
-video/
-output/
-*.mp4
+# Videos (archivos pesados - descargar desde Google Drive)
+clips/original/*.mp4
+clips/original/*.avi
+clips/original/*.mov
+
+# Videos procesados
+clips/processed/*.mp4
+clips/processed/*.avi
+
+# Archivos ZIP
 *.zip
-*.avi
-*.mov
 
-# Logs
-logs/
-*.log
+# Salidas generadas
+output/heatmaps/*.png
+logs/*.log
+
