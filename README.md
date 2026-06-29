@@ -4,13 +4,30 @@ Este proyecto es una plataforma avanzada y modular de análisis deportivo de fú
 
 ---
 
-## 📸 Demostración de Resultados (Grid 2x2)
+## 🎬 Demo en Video
+
+> 📺 **Video de demostración en YouTube:**
+> *[Próximamente - enlace pendiente]*
+
+---
+
+## 🚀 Acceso Rápido
+
+| Recurso | Enlace |
+|---|---|
+| 📓 **Notebook de Google Colab** | [Abrir en Colab](https://colab.research.google.com/drive/1kCLXkpfXf74LGTfW1IkkSQkKvgjfOGU9) |
+| 🤖 **Modelo entrenado + Videos** | [Google Drive](https://drive.google.com/drive/folders/15nc9FGu59d2YMkjfg_UXtFtHlaZ9_4ci) |
+| 💻 **Código fuente** | [GitHub](https://github.com/HectrorrVas/FutbolIA) |
+
+---
+
+## 📸 Resultados (Grid 2x2)
 
 El pipeline genera automáticamente un video consolidado en cuadrícula sincronizada de 4 paneles:
 
 1. **ORIGINAL**: El metraje de video original sin marcas para una visualización natural.
 2. **VISTA GENERAL + MAPA 2D**: El video con círculos de colores integrados junto a un minimapa táctico 2D en tiempo real.
-3. **ANÁLISIS EQUIPO A**: Aísla al Equipo A mostrando su bloque defensivo (Convex Hull), su red de pases/coordinación (vecinos cercanos) y las distancias instantáneas en metros entre jugadores. Los rivales se atenúan en opacidad.
+3. **ANÁLISIS EQUIPO A**: Aísla al Equipo A mostrando su bloque defensivo (Convex Hull), su red de coordinación (vecinos cercanos) y las distancias instantáneas en metros entre jugadores. Los rivales se atenúan en opacidad.
 4. **ANÁLISIS EQUIPO B**: Mismo análisis anterior enfocado exclusivamente en el Equipo B.
 
 ---
@@ -32,62 +49,56 @@ El pipeline genera automáticamente un video consolidado en cuadrícula sincroni
 FutbolIA/
 ├── config/
 │   ├── field.png          # Imagen de fondo del campo de fútbol para el mapa 2D
-│   └── settings.py         # Configuraciones generales del proyecto
+│   └── settings.py        # Configuraciones generales del proyecto
 ├── model/
-│   └── best.pt             # Pesos entrenados de YOLOv8l (excluido en gitignore)
+│   └── best.pt            # Pesos entrenados de YOLOv8 (descargar desde Google Drive)
 ├── clips/
-│   ├── raw/                # Videos originales a procesar
-│   └── processed/          # Videos de salida (grid, individuales, main)
+│   ├── raw/               # Videos originales a procesar
+│   └── processed/         # Videos de salida (grid, individuales, main)
 ├── output/
-│   └── heatmaps/           # Mapas de calor generados automáticamente (.png)
+│   └── heatmaps/          # Mapas de calor generados automáticamente (.png)
 ├── src/
-│   ├── analytics.py        # Módulos HeatmapManager y TacticalAnalyzer
-│   ├── detect_video.py     # Script de ejecución principal del pipeline
-│   ├── filters.py          # Implementación del OneEuroFilter2D
-│   ├── processor.py        # Orquestador del pipeline de frames y video
-│   ├── renderer.py         # Dibujado del canvas compuesto y campo 2D
-│   └── tracker.py          # Gestor de inferencia y tracking con ByteTrack
-├── .gitignore              # Archivos excluidos de control de versiones
-├── requirements.txt        # Dependencias de Python
-└── README.md               # Documentación del proyecto
+│   ├── analytics.py       # Módulos HeatmapManager y TacticalAnalyzer
+│   ├── detect_video.py    # Script de ejecución principal del pipeline
+│   ├── filters.py         # Implementación del OneEuroFilter2D
+│   ├── processor.py       # Orquestador del pipeline de frames y video
+│   ├── renderer.py        # Dibujado del canvas compuesto y campo 2D
+│   └── tracker.py         # Gestor de inferencia y tracking con ByteTrack
+├── .gitignore             # Archivos excluidos de control de versiones
+├── requirements.txt       # Dependencias de Python
+└── README.md              # Documentación del proyecto
 ```
 
 ---
 
-## 🛠️ Requisitos e Instalación
+## 🛠️ Requisitos e Instalación Local
 
 ### 1. Clonar el repositorio
 ```bash
-git clone https://github.com/tu-usuario/FutbolIA.git
+git clone https://github.com/HectrorrVas/FutbolIA.git
 cd FutbolIA
 ```
 
 ### 2. Crear un entorno virtual e instalar dependencias
 ```bash
-# Crear entorno virtual
 python -m venv .venv
 
-# Activar entorno virtual
-# En Windows:
+# Activar en Windows:
 .venv\Scripts\activate
-# En Linux/macOS:
+# Activar en Linux/macOS:
 source .venv/bin/activate
 
-# Instalar dependencias
 pip install -r requirements.txt
 ```
 
-### 3. Agregar los pesos del modelo
-Crea la carpeta `model/` si no existe y coloca el archivo de pesos entrenados con el nombre `best.pt`.
+### 3. Descargar el modelo entrenado
+Descarga la carpeta del modelo desde [Google Drive](https://drive.google.com/drive/folders/15nc9FGu59d2YMkjfg_UXtFtHlaZ9_4ci) y coloca el archivo `best.pt` dentro de la carpeta `model/`.
 
 ---
 
 ## 🚀 Cómo Ejecutar
 
-Para iniciar el pipeline completo en tu máquina local:
-
 ```bash
-# Asegúrate de definir el PYTHONPATH para que Python reconozca el directorio src
 # En Windows (PowerShell):
 $env:PYTHONPATH="."
 python src/detect_video.py
@@ -99,17 +110,28 @@ python src/detect_video.py
 
 ---
 
-## 📊 Integración con Google Colab
+## 📊 Integración con Google Colab (Recomendado para GPU)
 
-El proyecto es totalmente compatible con Google Colab para procesamiento acelerado por GPU:
+> [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1kCLXkpfXf74LGTfW1IkkSQkKvgjfOGU9)
 
-1. Comprime las carpetas necesarias:
+1. Comprime el proyecto desde Windows:
    ```powershell
    Compress-Archive -Path src, config, model, clips, run_colab.ipynb -DestinationPath FutbolIA_colab.zip -Force
    ```
-2. Sube el `.zip` a tu entorno de Colab.
-3. Descomprime y ejecuta el script principal:
+2. Sube el `.zip` a Colab y ejecuta:
    ```python
    !unzip -q FutbolIA_colab.zip -d /content/FutbolIA/
    !PYTHONPATH=/content/FutbolIA python /content/FutbolIA/src/detect_video.py
    ```
+
+---
+
+## 📝 Modelo YOLO — Clases Detectadas
+
+| ID | Clase | Color en video |
+|---|---|---|
+| 0 | Árbitro | 🟡 Amarillo |
+| 1 | Balón | ⚪ Blanco |
+| 2 | Equipo A | 🔵 Azul |
+| 3 | Equipo B | 🔴 Rojo |
+| 5 | Portero | 🟢 Verde |
