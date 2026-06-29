@@ -1,0 +1,38 @@
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyCharm / VS Code workspace configurations
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Model weights (YOLO models are too large for Git)
+model/
+*.pt
+*.onnx
+*.engine
+
+# Video clips (raw and processed)
+clips/
+video/
+output/
+*.mp4
+*.zip
+*.avi
+*.mov
+
+# Logs
+logs/
+*.log
