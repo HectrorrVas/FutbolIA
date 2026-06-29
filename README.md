@@ -1,6 +1,6 @@
 # FutbolIA: Pipeline Profesional de Análisis Táctico de Fútbol
 
-Este proyecto es una plataforma avanzada y modular de análisis deportivo de fútbol basada en Inteligencia Artificial (**YOLOv8 + ByteTrack**). Permite procesar videos de fútbol (especialmente tomas aéreas de drones o cámaras tácticas), realizar el tracking continuo de jugadores y balón, y proyectar visualizaciones analíticas avanzadas directamente en el video y en un mapa táctico 2D.
+Este proyecto es una plataforma avanzada y modular de análisis deportivo de fútbol basada en Inteligencia Artificial (**YOLO26L (Ultralytics) + ByteTrack**). Permite procesar videos de fútbol (especialmente tomas aéreas de drones o cámaras tácticas), realizar el tracking continuo de jugadores y balón, y proyectar visualizaciones analíticas avanzadas directamente en el video y en un mapa táctico 2D.
 
 ---
 
@@ -51,7 +51,7 @@ FutbolIA/
 │   ├── field.png          # Imagen de fondo del campo de fútbol para el mapa 2D
 │   └── settings.py        # Configuraciones generales del proyecto
 ├── model/
-│   └── best.pt            # Pesos entrenados de YOLOv8 (descargar desde Google Drive)
+│   └── best.pt            # Pesos entrenados de YOLO26L (descargar desde Google Drive)
 ├── clips/
 │   ├── raw/               # Videos originales a procesar
 │   └── processed/         # Videos de salida (grid, individuales, main)
@@ -126,7 +126,9 @@ python src/detect_video.py
 
 ---
 
-## 📝 Modelo YOLO — Clases Detectadas
+## 📝 Modelo — YOLO26L (Ultralytics)
+
+El modelo base utilizado es **[YOLO26L](https://docs.ultralytics.com/es/models/yolo26)** en su variante **Large** de Ultralytics, entrenado con imágenes de partidos de fútbol para detectar con precisión las siguientes clases:
 
 | ID | Clase | Color en video |
 |---|---|---|
