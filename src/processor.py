@@ -133,9 +133,13 @@ class VideoProcessor:
           - 'player_heatmap' : Mapa de calor de un jugador específico (requiere player_id).
         """
         input_path  = Path(input_video_path)
-        output_path = Path(output_video_path)
-        out_dir     = output_path.parent
         stem = input_path.stem
+        if output_video_path is not None:
+            output_path = Path(output_video_path)
+            out_dir     = output_path.parent
+        else:
+            out_dir     = input_path.parent.parent / "processed"
+            output_path = out_dir / f"{stem}_main.mp4"
 
         cap = cv2.VideoCapture(str(input_path))
         if not cap.isOpened():
