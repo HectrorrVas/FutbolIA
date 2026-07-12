@@ -152,7 +152,8 @@ class Renderer:
         # Dibujar texto blanco
         cv2.putText(img, text, (tx, ty), font, scale, (255, 255, 255), thickness, lineType=cv2.LINE_AA)
 
-    def render_canvas(self, frame, players, ball_pos, estimator=None, draw_coordination=True):
+    def render_canvas(self, frame, players, ball_pos, estimator=None, draw_coordination=True,
+                      heatmap_player_id=None, heatmap_positions=None):
         """
         Dibuja los marcadores en el frame y genera el mapa táctico 2D vertical de forma métrica
         mediante homografía. Retorna la imagen final del canvas compuesto.
@@ -199,6 +200,36 @@ class Renderer:
         # 2. Renderizar el Mapa Táctico 2D (Usando coordenadas reales en metros)
         map_w = int(vid_w * 0.38)
         tac, f_pad, f_fw, f_fh = self.draw_field(map_w, vid_h)
+        
+        # Dibujar mapa de calor dinámico si está activo
+        if heatmap_player_id is not None and heatmap_positions is not None and len(heatmap_positions) >= 5:
+            accum = np.zeros((vid_h, map_w), dtype=np.float32)
+            for X_m, Y_m in heatmap_positions:
+                px, py = self.real_to_canvas_px(X_m, Y_m, map_w, vid_h)
+                if 0 <= px < map_w and 0 <= py < vid_h:
+                    accum[py, px] += 1.0
+            
+            blur_r = int(map_w * 0.08)
+            if blur_r % 2 == 0:
+                blur_r += 1
+            density = cv2.GaussianBlur(accum, (blur_r, blur_r), 0)
+            max_val = np.max(density)
+            if max_val > 0:
+                density_norm = (density / max_val * 255).astype(np.uint8)
+                heatmap_color = cv2.applyColorMap(density_norm, cv2.COLORMAP_JET)
+                mask = (density_norm > 15).astype(np.uint8)
+                for c in range(3):
+                    tac[:, :, c] = np.where(
+                        mask == 1,
+                        cv2.addWeighted(heatmap_color[:, :, c], 0.65, tac[:, :, c], 0.35, 0),
+                        tac[:, :, c]
+                    )
+            
+            # Dibujar etiqueta de Heatmap activo en el mapa
+            cv2.rectangle(tac, (10, 10), (220, 36), (15, 15, 15), -1)
+            cv2.rectangle(tac, (10, 10), (220, 36), (200, 200, 200), 1)
+            cv2.putText(tac, f"HEATMAP: JUGADOR ID {heatmap_player_id}", (16, 26),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 215, 255), 1, cv2.LINE_AA)
         
         mapped_players = []
 

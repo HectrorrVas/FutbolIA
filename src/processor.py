@@ -214,6 +214,7 @@ class VideoProcessor:
                 cap.release()
                 raise IOError("No se pudo inicializar uno de los VideoWriters.")
 
+        accumulated_positions = {}
         frame_idx = 0
         pbar = tqdm(
             total=total_frames, unit="frame", ncols=80,
@@ -287,11 +288,22 @@ class VideoProcessor:
                 # ---- 4. Actualizar el Tracking y ReID Multimodal -----------------
                 players_to_render = self.tracker.update(frame, detect_results, self.estimator, timestamp)
 
+                # Acumular posiciones reales de los jugadores
+                for p in players_to_render:
+                    tid = p.get("track_id")
+                    real_pos = p.get("real_pos")
+                    if tid is not None and real_pos is not None:
+                        if tid not in accumulated_positions:
+                            accumulated_positions[tid] = []
+                        accumulated_positions[tid].append(real_pos)
+
                 # ---- Renderizado Video 1: ReID — Canvas combinado (main) ---------
                 canvas_frame = None
                 if DO_REID:
                     canvas_frame, mapped_players = self.renderer.render_canvas(
-                        frame, players_to_render, ball_pos, self.estimator
+                        frame, players_to_render, ball_pos, self.estimator,
+                        heatmap_player_id=player_id if mode in ("reid", "full") else None,
+                        heatmap_positions=accumulated_positions.get(player_id) if player_id is not None else None
                     )
                     self.heatmap_manager.update(mapped_players)
                     writer_main.write(canvas_frame)
