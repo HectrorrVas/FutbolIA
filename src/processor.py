@@ -54,12 +54,83 @@ class VideoProcessor:
         self.heatmap_manager = HeatmapManager()
         self.ball_filter = None
 
-    def process(self, input_video_path, output_video_path, mode="reid"):
+    # ------------------------------------------------------------------ #
+    # Escaneo rápido de IDs — Pase 1 (sin renderizado)                    #
+    # ------------------------------------------------------------------ #
+    def scan_player_ids(self, input_video_path: str, max_frames: int = None) -> dict:
         """
-        Procesa el video de entrada y genera los videos de análisis según el modo:
-          - 'reid'  : Solo el video principal con mapa 2D y IDs persistentes (el más rápido).
-          - 'teams' : Solo los videos de análisis por equipo (Equipo A y Equipo B).
-          - 'full'  : Genera los 4 videos: reid + teams + grid 2x2.
+        Hace un pase rápido por el video sin renderizar ningún frame.
+        Retorna un diccionario con los IDs de track encontrados y cuántos
+        frames apareció cada uno: {track_id: {frames, class_id}}.
+        """
+        input_path = Path(input_video_path)
+        cap = cv2.VideoCapture(str(input_path))
+        if not cap.isOpened():
+            raise FileNotFoundError(f"No se pudo abrir el video: {input_path}")
+
+        fps          = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if max_frames is None:
+            max_frames = total_frames
+        dt = 1.0 / fps if fps > 0 else 0.04
+
+        print(f"\n🔍 Escaneando IDs de jugadores en '{input_path.name}'...")
+        print(f"   Frames a procesar: {min(max_frames, total_frames)} / {total_frames}")
+
+        id_registry = {}  # {track_id: {"frames": int, "class_id": int}}
+        frame_idx = 0
+
+        pbar = tqdm(total=min(max_frames, total_frames), unit="frame", ncols=80,
+                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
+        try:
+            while cap.isOpened() and frame_idx < max_frames:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame_idx += 1
+                pbar.update(1)
+                timestamp = frame_idx * dt
+
+                # Detección de la cancha
+                pose_results = self.yolo_pose(frame, verbose=False)
+                detected_kps = {}
+                if len(pose_results) > 0 and pose_results[0].keypoints is not None:
+                    kpts = pose_results[0].keypoints
+                    xy   = kpts.xy.cpu().numpy()[0]
+                    conf = kpts.conf.cpu().numpy()[0] if kpts.conf is not None else [1.0] * len(xy)
+                    for i in range(min(20, len(xy))):
+                        detected_kps[f"KP{i:02d}"] = (float(xy[i][0]), float(xy[i][1]), float(conf[i]))
+                self.estimator.estimate(detected_kps)
+
+                # Detección de jugadores
+                detect_results = self.yolo_detect(
+                    frame, conf=self.player_conf, imgsz=self.imgsz, verbose=False
+                )[0]
+
+                # Actualizar tracker
+                active_tracks = self.tracker.update(frame, detect_results, self.estimator, timestamp)
+
+                # Registrar IDs activos
+                for t in active_tracks:
+                    tid = t["track_id"]
+                    if tid not in id_registry:
+                        id_registry[tid] = {"frames": 0, "class_id": t["class_id"]}
+                    id_registry[tid]["frames"] += 1
+        finally:
+            cap.release()
+            pbar.close()
+
+        # Ordenar por cantidad de frames (los jugadores más visibles primero)
+        id_registry = dict(sorted(id_registry.items(), key=lambda x: -x[1]["frames"]))
+        return id_registry
+
+    def process(self, input_video_path, output_video_path, mode="reid", player_id: int = None):
+        """
+        Procesa el video de entrada y genera los videos/imágenes según el modo:
+          - 'reid'           : Video principal con mapa 2D y IDs persistentes.
+          - 'teams'          : Videos de análisis por equipo (Equipo A y Equipo B).
+          - 'full'           : Los 4 videos: reid + teams + grid 2x2.
+          - 'player_heatmap' : Mapa de calor de un jugador específico (requiere player_id).
         """
         input_path  = Path(input_video_path)
         output_path = Path(output_video_path)
@@ -83,8 +154,22 @@ class VideoProcessor:
         DO_REID  = mode in ("reid", "full")
         DO_TEAMS = mode in ("teams", "full")
         DO_GRID  = mode == "full"
+        DO_HEATMAP_PLAYER = mode == "player_heatmap"
 
-        modo_label = {"reid": "ReID + Mapa 2D", "teams": "Análisis por Equipos", "full": "Completo (4 videos)"}.get(mode, mode)
+        modo_label = {
+            "reid":           "ReID + Mapa 2D",
+            "teams":          "Análisis por Equipos",
+            "full":           "Completo (4 videos)",
+            "player_heatmap": f"Mapa de Calor — Jugador ID {player_id}"
+        }.get(mode, mode)
+
+        # ── Modo Mapa de Calor Individual: ruta dedicada ─────────────────────────
+        if DO_HEATMAP_PLAYER:
+            if player_id is None:
+                raise ValueError("Debes especificar 'player_id' para el modo 'player_heatmap'.")
+            self._run_player_heatmap(input_path, out_dir, stem, fps, total_frames, dt,
+                                     map_w, height, player_id)
+            return
 
         print("=" * 72)
         print("SISTEMA DE ANALISIS TACTICO DE FUTBOL - Futbol2026")
@@ -293,3 +378,141 @@ class VideoProcessor:
             if out.exists():
                 sz = out.stat().st_size / (1024 * 1024)
                 print(f"    {out.name:35s} {sz:6.1f} MB  [{label}]")
+
+    # ------------------------------------------------------------------ #
+    # Mapa de calor de jugador individual                                  #
+    # ------------------------------------------------------------------ #
+    def _run_player_heatmap(self, input_path: Path, out_dir: Path, stem: str,
+                            fps: float, total_frames: int, dt: float,
+                            map_w: int, map_h: int, player_id: int):
+        """
+        Procesa el video acumulando solo las posiciones del jugador con 'player_id'
+        y genera un mapa de calor PNG de alta calidad sobre la cancha 2D.
+        """
+        class_name_map = {0: "Árbitro", 2: "Equipo A", 3: "Equipo B", 5: "Portero"}
+
+        print("=" * 72)
+        print(f"  MAPA DE CALOR — Jugador ID {player_id}")
+        print("=" * 72)
+        print(f"  Video          : {input_path.name}")
+        print(f"  Total frames   : {total_frames}")
+        print()
+
+        cap = cv2.VideoCapture(str(input_path))
+        positions = []        # Posiciones en metros reales
+        player_class = None   # Se detecta automáticamente en el primer hit
+        frame_idx = 0
+
+        pbar = tqdm(total=total_frames, unit="frame", ncols=80,
+                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
+        try:
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame_idx += 1
+                pbar.update(1)
+                timestamp = frame_idx * dt
+
+                # Detección de la cancha
+                pose_results = self.yolo_pose(frame, verbose=False)
+                detected_kps = {}
+                if len(pose_results) > 0 and pose_results[0].keypoints is not None:
+                    kpts = pose_results[0].keypoints
+                    xy   = kpts.xy.cpu().numpy()[0]
+                    conf = kpts.conf.cpu().numpy()[0] if kpts.conf is not None else [1.0] * len(xy)
+                    for i in range(min(20, len(xy))):
+                        detected_kps[f"KP{i:02d}"] = (float(xy[i][0]), float(xy[i][1]), float(conf[i]))
+                self.estimator.estimate(detected_kps)
+
+                # Detección de jugadores
+                detect_results = self.yolo_detect(
+                    frame, conf=self.player_conf, imgsz=self.imgsz, verbose=False
+                )[0]
+
+                # Actualizar tracker
+                active_tracks = self.tracker.update(frame, detect_results, self.estimator, timestamp)
+
+                # Acumular solo el jugador solicitado
+                for t in active_tracks:
+                    if t["track_id"] == player_id:
+                        positions.append(t["real_pos"])
+                        if player_class is None:
+                            player_class = t["class_id"]
+                        break
+        finally:
+            cap.release()
+            pbar.close()
+
+        n_positions = len(positions)
+        print(f"\n  Posiciones acumuladas para ID {player_id}: {n_positions}")
+
+        if n_positions < 10:
+            print(f"\n  ⚠️  Muy pocas apariciones ({n_positions}) para el ID {player_id}.")
+            print("     Verifica que el ID sea correcto con scan_player_ids() primero.")
+            return
+
+        # ── Construir el canvas del mapa de calor ────────────────────────────────
+        map_img, _, _, _ = self.renderer.draw_field(map_w, map_h)
+
+        # Convertir metros a píxeles del canvas
+        accum = np.zeros((map_h, map_w), dtype=np.float32)
+        for X_m, Y_m in positions:
+            px, py = self.renderer.real_to_canvas_px(X_m, Y_m, map_w, map_h)
+            if 0 <= px < map_w and 0 <= py < map_h:
+                accum[py, px] += 1.0
+
+        # Difuminar para el efecto de calor
+        blur_r = int(map_w * 0.07)
+        if blur_r % 2 == 0:
+            blur_r += 1
+        density = cv2.GaussianBlur(accum, (blur_r, blur_r), 0)
+
+        max_val = np.max(density)
+        if max_val <= 0:
+            print("  ⚠️  No se pudo generar el mapa: todas las posiciones fuera del canvas.")
+            return
+        density_norm = (density / max_val * 255).astype(np.uint8)
+
+        heatmap_color = cv2.applyColorMap(density_norm, cv2.COLORMAP_JET)
+        mask = (density_norm > 15).astype(np.uint8)
+
+        result = map_img.copy()
+        for c in range(3):
+            result[:, :, c] = np.where(
+                mask == 1,
+                cv2.addWeighted(heatmap_color[:, :, c], 0.70, map_img[:, :, c], 0.30, 0),
+                map_img[:, :, c]
+            )
+
+        # ── Añadir información del jugador en la imagen ───────────────────────────
+        clase_label = class_name_map.get(player_class, "Jugador")
+        color_jugador = self.renderer.class_colors.get(player_class, (200, 200, 200))
+        titulo = f"MAPA DE CALOR — ID {player_id}  ({clase_label})"
+        subtitulo = f"{n_positions} registros de posicion"
+
+        # Fondo del título
+        cv2.rectangle(result, (0, 0), (map_w, 52), (10, 10, 10), -1)
+        cv2.rectangle(result, (0, 0), (map_w, 52), color_jugador, 2)
+        cv2.putText(result, titulo,   (14, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.62, color_jugador, 2, cv2.LINE_AA)
+        cv2.putText(result, subtitulo,(14, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1, cv2.LINE_AA)
+
+        # Marcador en la posición promedio del jugador
+        if positions:
+            avg_x = float(np.mean([p[0] for p in positions]))
+            avg_y = float(np.mean([p[1] for p in positions]))
+            ax, ay = self.renderer.real_to_canvas_px(avg_x, avg_y, map_w, map_h)
+            cv2.circle(result, (ax, ay), 10, color_jugador, -1, lineType=cv2.LINE_AA)
+            cv2.circle(result, (ax, ay), 10, (255, 255, 255), 2, lineType=cv2.LINE_AA)
+            cv2.putText(result, f"ID {player_id}", (ax - 18, ay - 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # ── Guardar la imagen ─────────────────────────────────────────────────────
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_file = out_dir / f"{stem}_heatmap_player_{player_id}.png"
+        cv2.imwrite(str(output_file), result)
+
+        sz = output_file.stat().st_size / 1024
+        print(f"\n  ✅ Mapa de calor guardado: {output_file.name}  ({sz:.0f} KB)")
+        print(f"     Zona promedio del jugador: X={avg_x:.1f}m, Y={avg_y:.1f}m")
+
