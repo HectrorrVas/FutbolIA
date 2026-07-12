@@ -54,8 +54,13 @@ class VideoProcessor:
         self.heatmap_manager = HeatmapManager()
         self.ball_filter = None
 
-    def process(self, input_video_path, output_video_path):
-        """Procesa el video de entrada y genera todos los videos de análisis."""
+    def process(self, input_video_path, output_video_path, mode="reid"):
+        """
+        Procesa el video de entrada y genera los videos de análisis según el modo:
+          - 'reid'  : Solo el video principal con mapa 2D y IDs persistentes (el más rápido).
+          - 'teams' : Solo los videos de análisis por equipo (Equipo A y Equipo B).
+          - 'full'  : Genera los 4 videos: reid + teams + grid 2x2.
+        """
         input_path  = Path(input_video_path)
         output_path = Path(output_video_path)
         out_dir     = output_path.parent
@@ -75,18 +80,25 @@ class VideoProcessor:
         canvas_w = width + map_w
         canvas_h = height + self.renderer.legend_h
 
+        DO_REID  = mode in ("reid", "full")
+        DO_TEAMS = mode in ("teams", "full")
+        DO_GRID  = mode == "full"
+
+        modo_label = {"reid": "ReID + Mapa 2D", "teams": "Análisis por Equipos", "full": "Completo (4 videos)"}.get(mode, mode)
+
         print("=" * 72)
         print("SISTEMA DE ANALISIS TACTICO DE FUTBOL - Futbol2026")
         print("=" * 72)
         print(f"  Entrada          : {input_path.name}")
         print(f"  Resolución       : {width}x{height}  |  FPS: {fps:.2f}  |  Frames: {total_frames}")
+        print(f"  Modo             : {modo_label}")
         print(f"  Canvas combinado : {canvas_w}x{canvas_h}")
         print(f"  Salida           : {out_dir}")
         print()
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
-        # Cuadrícula 2x2
+        # Cuadrícula 2x2 (solo si mode=full)
         grid_w = width * 2
         grid_h = height * 2
 
@@ -102,13 +114,14 @@ class VideoProcessor:
         out_b    = out_dir / f"{stem}_equipoB.mp4"
         out_grid = out_dir / f"{stem}_grid.mp4"
 
-        writer_main = cv2.VideoWriter(str(tmp_main), fourcc, fps, (canvas_w, canvas_h))
-        writer_a    = cv2.VideoWriter(str(tmp_a),    fourcc, fps, (width, height))
-        writer_b    = cv2.VideoWriter(str(tmp_b),    fourcc, fps, (width, height))
-        writer_grid = cv2.VideoWriter(str(tmp_grid), fourcc, fps, (grid_w, grid_h))
+        # Inicializar solo los escritores necesarios según el modo
+        writer_main = cv2.VideoWriter(str(tmp_main), fourcc, fps, (canvas_w, canvas_h)) if DO_REID  else None
+        writer_a    = cv2.VideoWriter(str(tmp_a),    fourcc, fps, (width, height))       if DO_TEAMS else None
+        writer_b    = cv2.VideoWriter(str(tmp_b),    fourcc, fps, (width, height))       if DO_TEAMS else None
+        writer_grid = cv2.VideoWriter(str(tmp_grid), fourcc, fps, (grid_w, grid_h))      if DO_GRID  else None
 
         for w_writer in [writer_main, writer_a, writer_b, writer_grid]:
-            if not w_writer.isOpened():
+            if w_writer is not None and not w_writer.isOpened():
                 cap.release()
                 raise IOError("No se pudo inicializar uno de los VideoWriters.")
 
@@ -185,69 +198,66 @@ class VideoProcessor:
                 # ---- 4. Actualizar el Tracking y ReID Multimodal -----------------
                 players_to_render = self.tracker.update(frame, detect_results, self.estimator, timestamp)
 
-                # ---- Renderizado Video 1: Canvas combinado (main) ----------------
-                canvas_frame, mapped_players = self.renderer.render_canvas(
-                    frame, players_to_render, ball_pos, self.estimator
-                )
-                self.heatmap_manager.update(mapped_players)
-                writer_main.write(canvas_frame)
+                # ---- Renderizado Video 1: ReID — Canvas combinado (main) ---------
+                canvas_frame = None
+                if DO_REID:
+                    canvas_frame, mapped_players = self.renderer.render_canvas(
+                        frame, players_to_render, ball_pos, self.estimator
+                    )
+                    self.heatmap_manager.update(mapped_players)
+                    writer_main.write(canvas_frame)
 
-                # ---- Renderizado Video 2: Equipo A (enfocado) --------------------
-                frame_a = TacticalAnalyzer.render_team_focus(
-                    frame, players_to_render, ball_pos,
-                    focused_class_id=2,
-                    class_colors=self.renderer.class_colors,
-                    marker_radius=8,
-                    show_distances=True
-                )
-                writer_a.write(frame_a)
+                # ---- Renderizado Videos 2 y 3: Análisis por Equipos ---------------
+                frame_a = frame_b = None
+                if DO_TEAMS:
+                    frame_a = TacticalAnalyzer.render_team_focus(
+                        frame, players_to_render, ball_pos,
+                        focused_class_id=2,
+                        class_colors=self.renderer.class_colors,
+                        marker_radius=8,
+                        show_distances=True
+                    )
+                    writer_a.write(frame_a)
 
-                # ---- Renderizado Video 3: Equipo B (enfocado) --------------------
-                frame_b = TacticalAnalyzer.render_team_focus(
-                    frame, players_to_render, ball_pos,
-                    focused_class_id=3,
-                    class_colors=self.renderer.class_colors,
-                    marker_radius=8,
-                    show_distances=True
-                )
-                writer_b.write(frame_b)
+                    frame_b = TacticalAnalyzer.render_team_focus(
+                        frame, players_to_render, ball_pos,
+                        focused_class_id=3,
+                        class_colors=self.renderer.class_colors,
+                        marker_radius=8,
+                        show_distances=True
+                    )
+                    writer_b.write(frame_b)
 
-                # ---- Renderizado Video 4: Cuadrícula 2x2 -------------------------
-                cell_orig  = frame.copy()
-                cell_main  = cv2.resize(canvas_frame, (width, height))
-                cell_a     = frame_a
-                cell_b     = frame_b
+                # ---- Renderizado Video 4: Cuadrícula 2x2 (solo mode=full) ---------
+                if DO_GRID and canvas_frame is not None and frame_a is not None:
+                    def _label(img, text, color=(200, 200, 200)):
+                        cv2.rectangle(img, (0, 0), (img.shape[1], 30), (0, 0, 0), -1)
+                        cv2.putText(img, text, (10, 21),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 1, cv2.LINE_AA)
 
-                # Dibujar etiqueta en cada celda
-                def _label(img, text, color=(200, 200, 200)):
-                    cv2.rectangle(img, (0, 0), (img.shape[1], 30), (0, 0, 0), -1)
-                    cv2.putText(img, text, (10, 21),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 1, cv2.LINE_AA)
+                    cell_orig = frame.copy()
+                    cell_main = cv2.resize(canvas_frame, (width, height))
+                    _label(cell_orig, "ORIGINAL")
+                    _label(cell_main, "REID + MAPA 2D")
+                    _label(frame_a,   "ANALISIS EQUIPO A", self.renderer.class_colors[2])
+                    _label(frame_b,   "ANALISIS EQUIPO B", self.renderer.class_colors[3])
 
-                _label(cell_orig, "ORIGINAL")
-                _label(cell_main, "VISTA GENERAL + MAPA")
-                _label(cell_a,    "ANALISIS EQUIPO A", self.renderer.class_colors[2])
-                _label(cell_b,    "ANALISIS EQUIPO B", self.renderer.class_colors[3])
+                    grid_frame = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
+                    grid_frame[0:height, 0:width]      = cell_orig
+                    grid_frame[0:height, width:grid_w] = cell_main
+                    grid_frame[height:grid_h, 0:width]      = frame_a
+                    grid_frame[height:grid_h, width:grid_w] = frame_b
 
-                # Crear cuadrícula exacta
-                grid_frame = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
-                grid_frame[0:height, 0:width] = cell_orig
-                grid_frame[0:height, width:grid_w] = cell_main
-                grid_frame[height:grid_h, 0:width] = cell_a
-                grid_frame[height:grid_h, width:grid_w] = cell_b
-
-                # Dibujar líneas divisorias
-                cv2.line(grid_frame, (width, 0), (width, grid_h), (0, 0, 0), 3)
-                cv2.line(grid_frame, (0, height), (grid_w, height), (0, 0, 0), 3)
-
-                writer_grid.write(grid_frame)
+                    cv2.line(grid_frame, (width, 0),      (width, grid_h),  (0, 0, 0), 3)
+                    cv2.line(grid_frame, (0, height),     (grid_w, height), (0, 0, 0), 3)
+                    writer_grid.write(grid_frame)
 
         finally:
             cap.release()
-            writer_main.release()
-            writer_a.release()
-            writer_b.release()
-            writer_grid.release()
+            if writer_main is not None: writer_main.release()
+            if writer_a    is not None: writer_a.release()
+            if writer_b    is not None: writer_b.release()
+            if writer_grid is not None: writer_grid.release()
             pbar.close()
 
         # ---- Generar mapas de calor -----------------------------------------------
@@ -257,14 +267,13 @@ class VideoProcessor:
         except Exception as e:
             print(f"[WARNING] Mapas de calor: {e}")
 
-        # ---- Re-codificar con FFmpeg H.264 -----------------------------------------
+        # ---- Re-codificar con FFmpeg H.264 (solo los que se generaron) ------------
         print("\nRe-codificando videos con FFmpeg H.264...")
-        jobs = [
-            (tmp_main, out_main, "Main (combinado)"),
-            (tmp_a,    out_a,    "Equipo A"),
-            (tmp_b,    out_b,    "Equipo B"),
-            (tmp_grid, out_grid, "Grid 2x2 (todos)"),
-        ]
+        jobs = []
+        if DO_REID:  jobs.append((tmp_main, out_main, "ReID + Mapa 2D"))
+        if DO_TEAMS: jobs.append((tmp_a,    out_a,    "Equipo A"))
+        if DO_TEAMS: jobs.append((tmp_b,    out_b,    "Equipo B"))
+        if DO_GRID:  jobs.append((tmp_grid, out_grid, "Grid 2x2 (todos)"))
 
         for tmp, out, label in jobs:
             if tmp.exists():
