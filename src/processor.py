@@ -5,8 +5,10 @@ from pathlib import Path
 from tqdm import tqdm
 import imageio_ffmpeg as im_ffmpeg
 
-from src.tracker import ByteTrackManager
-from src.filters import OneEuroFilter2D
+from ultralytics import YOLO
+from src.tracking.tracker import FootballTracker
+from src.field_model import HomographyEstimator
+from src.filters import BallKalmanFilter
 from src.renderer import Renderer
 from src.analytics import HeatmapManager, TacticalAnalyzer
 
@@ -28,32 +30,35 @@ def _encode_h264(input_path: Path, output_path: Path):
 class VideoProcessor:
     """
     Clase principal que orquesta el pipeline de procesamiento de video.
-
-    Genera 3 videos:
-      1. <stem>_main.mp4        - Vista combinada: video con marcadores + mapa 2D vertical.
-      2. <stem>_equipoA.mp4     - Analisis tactico del Equipo A (otros jugadores atenuados).
-      3. <stem>_equipoB.mp4     - Analisis tactico del Equipo B (otros jugadores atenuados).
+    Utiliza YOLO Pose para la detección de la cancha, YOLO Detect para los jugadores y balón,
+    y el FootballTracker personalizado para un ReID robusto y persistente.
     """
 
-    def __init__(self, model_path, confidence=0.25, imgsz=640):
+    def __init__(self, model_path, pose_model_path=None, confidence=0.25, imgsz=640):
         self.player_conf = confidence
-        self.ball_conf   = 0.12   # Umbral bajo para el balon (pequeno y rapido)
+        self.ball_conf   = 0.12   # Umbral bajo para el balón (pequeño y rápido)
+        self.imgsz       = imgsz
 
-        tracker_conf = min(self.player_conf, self.ball_conf)
-        self.tracker_manager = ByteTrackManager(model_path, conf=tracker_conf, imgsz=imgsz)
-        self.renderer        = Renderer()
-        self.player_filters  = {}
+        if pose_model_path is None:
+            pose_model_path = str(Path(model_path).parent / "best_pose.pt")
+
+        print(f"Cargando modelos YOLO...")
+        self.yolo_detect = YOLO(model_path)
+        self.yolo_pose   = YOLO(pose_model_path)
+        print(f"  -> Detección: {Path(model_path).name}")
+        print(f"  -> Pose Cancha: {Path(pose_model_path).name}")
+
+        self.tracker = FootballTracker(min_player_conf=self.player_conf)
+        self.estimator = HomographyEstimator(min_confidence=0.3)
+        self.renderer = Renderer()
         self.heatmap_manager = HeatmapManager()
+        self.ball_filter = None
 
-    # ------------------------------------------------------------------ #
-    # Pipeline principal                                                   #
-    # ------------------------------------------------------------------ #
     def process(self, input_video_path, output_video_path):
-        """Procesa el video de entrada y genera todos los videos de analisis."""
+        """Procesa el video de entrada y genera todos los videos de análisis."""
         input_path  = Path(input_video_path)
         output_path = Path(output_video_path)
         out_dir     = output_path.parent
-        # Usar el stem del VIDEO DE ENTRADA para nombres limpios (ej: clip_01)
         stem = input_path.stem
 
         cap = cv2.VideoCapture(str(input_path))
@@ -64,7 +69,7 @@ class VideoProcessor:
         width        = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height       = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        dt           = 1.0 / fps if fps > 0 else 0.1
+        dt           = 1.0 / fps if fps > 0 else 0.04
 
         map_w    = int(width * 0.38)
         canvas_w = width + map_w
@@ -74,14 +79,14 @@ class VideoProcessor:
         print("SISTEMA DE ANALISIS TACTICO DE FUTBOL - Futbol2026")
         print("=" * 72)
         print(f"  Entrada          : {input_path.name}")
-        print(f"  Resolucion       : {width}x{height}  |  FPS: {fps:.2f}  |  Frames: {total_frames}")
+        print(f"  Resolución       : {width}x{height}  |  FPS: {fps:.2f}  |  Frames: {total_frames}")
         print(f"  Canvas combinado : {canvas_w}x{canvas_h}")
         print(f"  Salida           : {out_dir}")
         print()
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
-        # Cuadricula 2x2: cada celda = (width x height), grid total = (2*width x 2*height)
+        # Cuadrícula 2x2
         grid_w = width * 2
         grid_h = height * 2
 
@@ -102,8 +107,8 @@ class VideoProcessor:
         writer_b    = cv2.VideoWriter(str(tmp_b),    fourcc, fps, (width, height))
         writer_grid = cv2.VideoWriter(str(tmp_grid), fourcc, fps, (grid_w, grid_h))
 
-        for w in [writer_main, writer_a, writer_b, writer_grid]:
-            if not w.isOpened():
+        for w_writer in [writer_main, writer_a, writer_b, writer_grid]:
+            if not w_writer.isOpened():
                 cap.release()
                 raise IOError("No se pudo inicializar uno de los VideoWriters.")
 
@@ -123,53 +128,66 @@ class VideoProcessor:
                 pbar.update(1)
                 timestamp = frame_idx * dt
 
-                # ---- Deteccion y Tracking ----------------------------------------
-                results = self.tracker_manager.track(frame)
+                # ---- 1. Detección de la Cancha y Calibración de Homografía --------
+                pose_results = self.yolo_pose(frame, verbose=False)
+                detected_kps = {}
+                if len(pose_results) > 0 and pose_results[0].keypoints is not None:
+                    kpts = pose_results[0].keypoints
+                    xy = kpts.xy.cpu().numpy()[0]
+                    conf = kpts.conf.cpu().numpy()[0] if kpts.conf is not None else [1.0] * len(xy)
+                    for i in range(min(20, len(xy))):
+                        x_kp, y_kp = xy[i]
+                        c_kp = conf[i]
+                        detected_kps[f"KP{i:02d}"] = (float(x_kp), float(y_kp), float(c_kp))
+                
+                # Estimar y actualizar homografía (con suavizado EMA temporal)
+                self.estimator.estimate(detected_kps)
 
-                players_to_render = []
-                ball_pos          = None
-                best_ball_conf    = -1.0
+                # ---- 2. Detección de Jugadores y Balón ---------------------------
+                detect_results = self.yolo_detect(frame, conf=min(self.player_conf, self.ball_conf), imgsz=self.imgsz, verbose=False)[0]
 
-                if results is not None and len(results.boxes) > 0:
-                    boxes      = results.boxes
-                    cls_arr    = boxes.cls.cpu().numpy().astype(int)
-                    xyxy_arr   = boxes.xyxy.cpu().numpy()
-                    id_arr     = (boxes.id.cpu().numpy().astype(int)
-                                  if boxes.id is not None
-                                  else [None] * len(boxes))
-                    conf_arr   = boxes.conf.cpu().numpy()
-
+                # ---- 3. Extraer y Suavizar Posición de la Pelota -----------------
+                raw_ball_pos = None
+                best_ball_conf = -1.0
+                if len(detect_results.boxes) > 0:
+                    boxes = detect_results.boxes
+                    cls_arr = boxes.cls.cpu().numpy().astype(int)
+                    xyxy_arr = boxes.xyxy.cpu().numpy()
+                    conf_arr = boxes.conf.cpu().numpy()
+                    
                     for i in range(len(boxes)):
-                        cls_id   = cls_arr[i]
-                        x1, y1, x2, y2 = xyxy_arr[i]
-                        track_id = id_arr[i]
-                        conf     = conf_arr[i]
-                        cx       = (x1 + x2) / 2.0
-                        cy       = (y1 + y2) / 2.0
+                        if cls_arr[i] == 1:  # Pelota
+                            c_ball = conf_arr[i]
+                            if c_ball >= self.ball_conf and c_ball > best_ball_conf:
+                                best_ball_conf = c_ball
+                                x1, y1, x2, y2 = xyxy_arr[i]
+                                raw_ball_pos = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
-                        if cls_id == 1:  # Balon
-                            if conf >= self.ball_conf and conf > best_ball_conf:
-                                best_ball_conf = conf
-                                ball_pos = (cx, cy)
+                # Actualizar el filtro de Kalman de la pelota
+                if raw_ball_pos is not None:
+                    if self.ball_filter is None:
+                        self.ball_filter = BallKalmanFilter(raw_ball_pos[0], raw_ball_pos[1], dt)
+                    else:
+                        self.ball_filter.update(raw_ball_pos[0], raw_ball_pos[1])
+                    ball_pos = raw_ball_pos
+                else:
+                    if self.ball_filter is not None:
+                        bx, by = self.ball_filter.predict(dt)
+                        self.ball_filter.missed_frames += 1
+                        if self.ball_filter.missed_frames < 15:
+                            ball_pos = (bx, by)
+                        else:
+                            self.ball_filter = None
+                            ball_pos = None
+                    else:
+                        ball_pos = None
 
-                        elif cls_id in [0, 2, 3, 5]:  # Jugadores
-                            if conf >= self.player_conf:
-                                if track_id is not None:
-                                    if track_id not in self.player_filters:
-                                        self.player_filters[track_id] = OneEuroFilter2D(
-                                            timestamp, cx, cy)
-                                    cx, cy = self.player_filters[track_id].filter(
-                                        timestamp, cx, cy)
-
-                                players_to_render.append({
-                                    "track_id" : track_id,
-                                    "class_id" : cls_id,
-                                    "center"   : (cx, cy)
-                                })
+                # ---- 4. Actualizar el Tracking y ReID Multimodal -----------------
+                players_to_render = self.tracker.update(frame, detect_results, self.estimator, timestamp)
 
                 # ---- Renderizado Video 1: Canvas combinado (main) ----------------
                 canvas_frame, mapped_players = self.renderer.render_canvas(
-                    frame, players_to_render, ball_pos
+                    frame, players_to_render, ball_pos, self.estimator
                 )
                 self.heatmap_manager.update(mapped_players)
                 writer_main.write(canvas_frame)
@@ -194,12 +212,11 @@ class VideoProcessor:
                 )
                 writer_b.write(frame_b)
 
-                # ---- Renderizado Video 4: Cuadricula 2x2 -------------------------
-                # Redimensionar cada panel al tamano de celda (width x height)
+                # ---- Renderizado Video 4: Cuadrícula 2x2 -------------------------
                 cell_orig  = frame.copy()
                 cell_main  = cv2.resize(canvas_frame, (width, height))
-                cell_a     = frame_a  # ya es width x height
-                cell_b     = frame_b  # ya es width x height
+                cell_a     = frame_a
+                cell_b     = frame_b
 
                 # Dibujar etiqueta en cada celda
                 def _label(img, text, color=(200, 200, 200)):
@@ -212,14 +229,14 @@ class VideoProcessor:
                 _label(cell_a,    "ANALISIS EQUIPO A", self.renderer.class_colors[2])
                 _label(cell_b,    "ANALISIS EQUIPO B", self.renderer.class_colors[3])
 
-                # Crear cuadricula exacta
+                # Crear cuadrícula exacta
                 grid_frame = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
                 grid_frame[0:height, 0:width] = cell_orig
                 grid_frame[0:height, width:grid_w] = cell_main
                 grid_frame[height:grid_h, 0:width] = cell_a
                 grid_frame[height:grid_h, width:grid_w] = cell_b
 
-                # Dibujar lineas divisorias
+                # Dibujar líneas divisorias
                 cv2.line(grid_frame, (width, 0), (width, grid_h), (0, 0, 0), 3)
                 cv2.line(grid_frame, (0, height), (grid_w, height), (0, 0, 0), 3)
 

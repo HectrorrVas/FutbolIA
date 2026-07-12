@@ -1,6 +1,10 @@
 import sys
 from pathlib import Path
 
+# Agregar el directorio raíz del proyecto al path del sistema
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(PROJECT_ROOT))
+
 from config.settings import (
     MODEL_PATH,
     ORIGINAL_CLIPS_DIR,
@@ -8,6 +12,7 @@ from config.settings import (
     CONFIDENCE,
     IMAGE_SIZE,
 )
+
 from src.processor import VideoProcessor
 
 def main():

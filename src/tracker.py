@@ -23,3 +23,16 @@ class ByteTrackManager:
             tracker="bytetrack.yaml"
         )
         return results[0] if results else None
+
+    def predict(self, frame):
+        """
+        Ejecuta la detección pura en el frame dado (sin tracking).
+        """
+        results = self.model.predict(
+            source=frame,
+            conf=self.conf,
+            imgsz=self.imgsz,
+            verbose=False
+        )
+        return results[0] if results else None
+
